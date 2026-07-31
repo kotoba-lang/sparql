@@ -20,6 +20,15 @@ from these node shapes:
   optional and names the subset of `:vars` to sort descending
 - `{:sparql/op :slice :offset n :limit n :pattern p}`
 
+`select` and `ask` return solutions. `construct`, `describe` and
+`describe-solutions` return an RDF **graph** — a SET of quad maps, because a
+graph has no duplicates and no order and a seq would invite callers to depend
+on both. A template triple with an unbound slot produces nothing (SPARQL 1.1
+§16.2). `describe` returns the SUBJECT triples, not the Concise Bounded
+Description the spec permits: CBD follows blank nodes and this library has no
+blank-node syntax to follow. The spec leaves the shape implementation-defined
+so a service can say which one it returns; this one says it.
+
 ```clojure
 (require '[sparql.core :as sparql])
 

@@ -112,3 +112,39 @@
 
 (deftest order-by-is-total-so-sorting-never-throws
   (is (some? (sort (sparql/row-comparator '[?v]) [{'?v {:a 1}} {'?v [1]} {'?v "s"}]))))
+
+;; --- CONSTRUCT / DESCRIBE --------------------------------------------------
+
+(deftest construct-instantiates-the-template-per-solution
+  (let [algebra {:sparql/op :bgp :patterns [['?s role (lit "admin")]]}
+        template [['?s (iri "isAdmin") (lit true)]]
+        g (sparql/construct template algebra quads)]
+    (is (set? g) "a graph, not a sequence — no duplicates and no order to depend on")
+    (is (every? #(= (iri "isAdmin") (:predicate %)) g))
+    (is (pos? (count g)))))
+
+(deftest construct-drops-a-triple-with-an-unbound-slot
+  (testing "SPARQL 1.1 §16.2: a template triple with an unbound slot produces
+            nothing, rather than a triple with a hole in it"
+    (let [algebra {:sparql/op :bgp :patterns [['?s role (lit "admin")]]}
+          template [['?s (iri "p") '?never]]]
+      (is (empty? (sparql/construct template algebra quads))))))
+
+(deftest construct-deduplicates
+  (let [algebra {:sparql/op :bgp :patterns [['?s '?p '?o]]}
+        template [[(iri "one") (iri "p") (lit 1)]]]
+    (is (= 1 (count (sparql/construct template algebra quads)))
+        "one variable-free template triple is one triple however many solutions")))
+
+(deftest describe-returns-the-subject-triples
+  (let [g (sparql/describe [(iri "alice")] quads)]
+    (is (set? g))
+    (is (every? #(= (iri "alice") (:subject %)) g))
+    (is (pos? (count g)))))
+
+(deftest describe-solutions-resolves-the-variable-first
+  (let [algebra {:sparql/op :bgp :patterns [['?s role (lit "admin")]]}
+        g (sparql/describe-solutions '[?s] algebra quads)]
+    (is (pos? (count g)))
+    (is (every? #(= (iri "alice") (:subject %)) g)
+        "alice is the only admin in the fixture")))
