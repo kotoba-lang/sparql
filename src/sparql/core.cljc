@@ -44,6 +44,46 @@
    [{}]
    patterns))
 
+(defn- cmp
+  "Compare two bound values, tolerating unbound (nil) and mixed types.
+
+  `clojure.core/compare` throws across types, and a solution sequence is
+  exactly where mixed types show up — SPARQL binds whatever the data holds
+  and does not promise homogeneity. Unbound sorts first (SPARQL 1.1 §15.1
+  puts unbound before everything), then values are compared inside a type,
+  and across types by type name so the order is at least total and stable
+  rather than an exception."
+  [a b]
+  (cond
+    (and (nil? a) (nil? b)) 0
+    (nil? a) -1
+    (nil? b) 1
+    :else
+    (let [ta (type a) tb (type b)]
+      (if (= ta tb)
+        (try (compare a b)
+             (catch #?(:clj Exception :cljs :default) _
+               (compare (str a) (str b))))
+        (compare (str ta) (str tb))))))
+
+(defn row-comparator
+  "Comparator over solution maps for `vars`, descending for those in `desc`.
+
+  Written out rather than `sort-by` + `juxt` because that form can only sort
+  every key the same direction — which is why `ORDER BY DESC(?x)` used to be
+  accepted and then silently sorted ASCENDING. A comparator that cannot express
+  the query is worse than one that rejects it."
+  ([vars] (row-comparator vars #{}))
+  ([vars desc]
+   (fn [x y]
+     (loop [vs (seq vars)]
+       (if-not vs
+         0
+         (let [v (first vs)
+               c (cmp (get x v) (get y v))
+               c (if (contains? desc v) (- c) c)]
+           (if (zero? c) (recur (next vs)) c)))))))
+
 (defn- eval-node [node quads]
   (case (:sparql/op node)
     :bgp      (bgp (:patterns node) quads)
@@ -64,7 +104,8 @@
                  lefts))
     :project  (map #(select-keys % (:vars node)) (eval-node (:pattern node) quads))
     :distinct (distinct (eval-node (:pattern node) quads))
-    :order-by (sort-by (apply juxt (:vars node)) (eval-node (:pattern node) quads))
+    :order-by (sort (row-comparator (:vars node) (set (:desc node)))
+                    (eval-node (:pattern node) quads))
     :slice    (cond->> (eval-node (:pattern node) quads)
                 (:offset node) (drop (:offset node))
                 (:limit node)  (take (:limit node)))))
