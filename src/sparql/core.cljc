@@ -110,6 +110,54 @@
                 (:offset node) (drop (:offset node))
                 (:limit node)  (take (:limit node)))))
 
+
+(defn- instantiate
+  "One template triple `[s p o]` -- written like a BGP pattern -- against one
+  solution: every logic variable replaced by
+  its binding. Returns nil when any position is still unbound — SPARQL 1.1
+  §16.2 says a template triple with an unbound slot produces nothing, rather
+  than a triple with a hole in it."
+  [[subject predicate object] binding]
+  (let [r (fn [t] (if (logic-var? t) (get binding t ::unbound) t))
+        s' (r subject) p' (r predicate) o' (r object)]
+    (when-not (some #{::unbound} [s' p' o'])
+      {:subject s' :predicate p' :object o'})))
+
+(defn construct
+  "`CONSTRUCT`: evaluate `algebra` and instantiate `template` (a seq of `[s p o]`
+  triple patterns, the same shape a `:bgp` takes) once per solution. Emits
+  rdf-shaped quad maps, which is what `describe` and every consumer of a graph
+  here already reads.
+
+  Returns a SET of triples, because the result of CONSTRUCT is an RDF graph and
+  a graph has no duplicates and no order — returning a seq would invite callers
+  to depend on both."
+  [template algebra quads]
+  (into #{}
+        (comp (mapcat (fn [binding] (keep #(instantiate % binding) template))))
+        (eval-node algebra quads)))
+
+(defn describe
+  "`DESCRIBE`: every quad whose subject is one of `terms`.
+
+  That is the SUBJECT-triples description, not the Concise Bounded Description
+  the spec permits — CBD follows blank nodes recursively, and this library has
+  no blank-node syntax to follow. The spec leaves the description's shape
+  implementation-defined precisely so a service can say which one it returns,
+  so this one says it.
+
+  Returns a set, for the same reason `construct` does."
+  [terms quads]
+  (let [wanted (set terms)]
+    (into #{} (filter #(contains? wanted (:subject %))) quads)))
+
+(defn describe-solutions
+  "`DESCRIBE ?v WHERE { ... }`: the terms `?v` takes across the solutions of
+  `algebra`, described. `vars` is the projection list."
+  [vars algebra quads]
+  (describe (into #{} (comp (mapcat (fn [b] (keep #(get b %) vars)))) (eval-node algebra quads))
+            quads))
+
 (defn select
   "Execute a SPARQL algebra tree (see the :sparql/op node shapes above)
   against a seq of rdf.core-shaped quads. Returns a seq of bindings maps
