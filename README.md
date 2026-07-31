@@ -16,7 +16,8 @@ from these node shapes:
 - `{:sparql/op :optional :left p1 :right p2}` — SPARQL `OPTIONAL`/LeftJoin
 - `{:sparql/op :project :vars [...] :pattern p}`
 - `{:sparql/op :distinct :pattern p}`
-- `{:sparql/op :order-by :vars [...] :pattern p}`
+- `{:sparql/op :order-by :vars [...] :desc #{...} :pattern p}` — `:desc` is
+  optional and names the subset of `:vars` to sort descending
 - `{:sparql/op :slice :offset n :limit n :pattern p}`
 
 ```clojure
