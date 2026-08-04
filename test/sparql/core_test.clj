@@ -148,3 +148,91 @@
     (is (pos? (count g)))
     (is (every? #(= (iri "alice") (:subject %)) g)
         "alice is the only admin in the fixture")))
+
+;; ── GROUP BY + aggregates ───────────────────────────────────────────────────
+
+(def ^:private ages
+  [{:subject (iri "alice") :predicate (iri "team") :object (lit "red")}
+   {:subject (iri "alice") :predicate (iri "age") :object (lit "30")}
+   {:subject (iri "bob") :predicate (iri "team") :object (lit "red")}
+   {:subject (iri "bob") :predicate (iri "age") :object (lit "20")}
+   {:subject (iri "carol") :predicate (iri "team") :object (lit "blue")}
+   {:subject (iri "carol") :predicate (iri "age") :object (lit 40)}])
+
+(defn- one [rows] (first rows))
+
+(deftest count-over-everything-is-one-group
+  (let [algebra {:sparql/op :group
+                 :aggregates [{:var '?c :fn :count :arg '?s}]
+                 :pattern {:sparql/op :bgp :patterns [['?s (iri "team") '?t]]}}]
+    (is (= {'?c (lit 3)} (one (sparql/select algebra ages))))))
+
+(deftest count-of-nothing-is-a-row-saying-zero
+  (testing "not zero rows — a caller counting things gets 0, which is what
+            SPARQL says and what makes COUNT usable as an existence check"
+    (let [algebra {:sparql/op :group
+                   :aggregates [{:var '?c :fn :count :arg '?s}]
+                   :pattern {:sparql/op :bgp :patterns [['?s (iri "nope") '?t]]}}]
+      (is (= [{'?c (lit 0)}] (vec (sparql/select algebra ages)))))))
+
+(deftest grouping-by-a-var-splits-the-solutions
+  (let [algebra {:sparql/op :group
+                 :by ['?t]
+                 :aggregates [{:var '?c :fn :count :arg '?s}]
+                 :pattern {:sparql/op :bgp :patterns [['?s (iri "team") '?t]]}}]
+    (is (= #{{'?t (lit "red") '?c (lit 2)}
+             {'?t (lit "blue") '?c (lit 1)}}
+           (set (sparql/select algebra ages))))))
+
+(deftest grouping-an-empty-result-is-zero-groups
+  (testing "unlike the no-:by case: there is no group to report a count for"
+    (let [algebra {:sparql/op :group
+                   :by ['?t]
+                   :aggregates [{:var '?c :fn :count :arg '?s}]
+                   :pattern {:sparql/op :bgp :patterns [['?s (iri "nope") '?t]]}}]
+      (is (= [] (vec (sparql/select algebra ages)))))))
+
+(deftest numeric-aggregates-parse-numbers-out-of-strings
+  (testing "a datom plane that stringifies on write reports 30 as \"30\";
+            without parsing, SUM/AVG/MIN/MAX over real data would see nothing
+            numeric at all"
+    (let [algebra {:sparql/op :group
+                   :aggregates [{:var '?sum :fn :sum :arg '?a}
+                                {:var '?min :fn :min :arg '?a}
+                                {:var '?max :fn :max :arg '?a}
+                                {:var '?avg :fn :avg :arg '?a}]
+                   :pattern {:sparql/op :bgp :patterns [['?s (iri "age") '?a]]}}
+          row (one (sparql/select algebra ages))]
+      (is (= 90.0 (double (:value (get row '?sum)))))
+      (is (= 20.0 (double (:value (get row '?min)))))
+      (is (= 40.0 (double (:value (get row '?max)))))
+      (is (= 30.0 (double (:value (get row '?avg))))))))
+
+(deftest a-value-that-is-not-a-number-is-skipped-not-thrown
+  (let [algebra {:sparql/op :group
+                 :aggregates [{:var '?sum :fn :sum :arg '?t}
+                              {:var '?c :fn :count :arg '?t}]
+                 :pattern {:sparql/op :bgp :patterns [['?s (iri "team") '?t]]}}
+        row (one (sparql/select algebra ages))]
+    (is (nil? (get row '?sum))
+        "SUM of nothing numeric is absent, not 0 — SUM of nothing and SUM of
+         zeros are different facts")
+    (is (= (lit 3) (get row '?c)) "COUNT still counts them")))
+
+(deftest count-star-counts-solutions-not-bindings
+  (let [algebra {:sparql/op :group
+                 :aggregates [{:var '?c :fn :count :arg :*}]
+                 :pattern {:sparql/op :optional
+                           :left {:sparql/op :bgp :patterns [['?s (iri "team") '?t]]}
+                           :right {:sparql/op :bgp :patterns [['?s (iri "nope") '?x]]}}}]
+    (is (= {'?c (lit 3)} (one (sparql/select algebra ages)))
+        "three solutions, none of which bind ?x")))
+
+(deftest distinct-count-collapses-repeats
+  (let [algebra {:sparql/op :group
+                 :aggregates [{:var '?all :fn :count :arg '?t}
+                              {:var '?d :fn :count :arg '?t :distinct? true}]
+                 :pattern {:sparql/op :bgp :patterns [['?s (iri "team") '?t]]}}
+        row (one (sparql/select algebra ages))]
+    (is (= (lit 3) (get row '?all)))
+    (is (= (lit 2) (get row '?d)) "red and blue")))
