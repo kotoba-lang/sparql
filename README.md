@@ -18,6 +18,14 @@ from these node shapes:
 - `{:sparql/op :distinct :pattern p}`
 - `{:sparql/op :order-by :vars [...] :desc #{...} :pattern p}` — `:desc` is
   optional and names the subset of `:vars` to sort descending
+- `{:sparql/op :group :by [?v ...] :aggregates [{:var ?c :fn :count :arg ?e}] :pattern p}`
+  — `GROUP BY` + aggregates. `:fn` is `:count`/`:sum`/`:min`/`:max`/`:avg`,
+  `:arg` a var or `:*` (COUNT(*)), optional `:distinct? true`. No `:by` means
+  one group over everything, which exists even for an empty result (so
+  `COUNT` answers 0 rather than no row); with `:by`, an empty result is zero
+  groups. The numeric aggregates parse numbers out of string values — a datom
+  plane that stringifies on write reports `30` as `"30"` — and skip what does
+  not parse rather than throwing.
 - `{:sparql/op :slice :offset n :limit n :pattern p}`
 
 `select` and `ask` return solutions. `construct`, `describe` and

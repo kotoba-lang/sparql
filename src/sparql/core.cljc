@@ -84,6 +84,79 @@
                c (if (contains? desc v) (- c) c)]
            (if (zero? c) (recur (next vs)) c)))))))
 
+(defn- numeric
+  "The number a term carries, or nil.
+
+  A datom plane that stringifies on write reports `30` as the string
+  `\"30\"`, so SUM/AVG/MIN/MAX over real data would otherwise see nothing
+  numeric at all. Parsing here is the same rule a FILTER comparison needs:
+  numeric when both sides parse as numbers, and this is the `parses as a
+  number` half of it. A value that does not parse contributes nothing rather
+  than throwing — SPARQL aggregates skip what they cannot add."
+  [term]
+  (let [v (:value term)]
+    (cond
+      (number? v) v
+      (string? v) (let [n #?(:clj (try (Double/parseDouble v) (catch Exception _ nil))
+                             :cljs (let [n (js/parseFloat v)]
+                                     (when-not (js/isNaN n) n)))]
+                    (when (and n (re-matches #"\s*-?\d+(\.\d+)?\s*" v)) n))
+      :else nil)))
+
+(defn- literal
+  "Wrap an aggregate result as a term, so a row is terms throughout and a
+  consumer never has to ask which columns are special."
+  [v]
+  {:rdf/type :literal :value v})
+
+(defn- aggregate-value
+  "One aggregate over one group's solutions.
+
+  `:arg` is a var, or `:*` for `COUNT(*)`. COUNT counts solutions in which
+  the arg is BOUND (`COUNT(*)` counts every solution); the numeric
+  aggregates skip solutions whose value is not a number, and answer nil for
+  an empty group — nil, not 0, because `SUM` of nothing and `SUM` of zeros
+  are different facts."
+  [{:keys [fn arg distinct?]} rows]
+  (let [bound (if (= :* arg) rows (filter #(contains? % arg) rows))
+        ;; DISTINCT applies to the VALUES, not the solutions. Deduping rows
+        ;; instead counts every distinct binding of every other variable too,
+        ;; which is the same number as no DISTINCT at all whenever the group
+        ;; has a key — silently making the modifier a no-op.
+        vals* (when-not (= :* arg) (map #(get % arg) bound))
+        vals* (if distinct? (distinct vals*) vals*)
+        nums (keep numeric vals*)]
+    (case fn
+      :count (if (= :* arg)
+               (count (if distinct? (distinct bound) bound))
+               (count vals*))
+      :sum (when (seq nums) (reduce + nums))
+      :min (when (seq nums) (reduce min nums))
+      :max (when (seq nums) (reduce max nums))
+      :avg (when (seq nums) (/ (reduce + nums) (count nums)))
+      nil)))
+
+(defn- group
+  "GROUP BY + aggregates.
+
+  With no `:by` vars the whole solution set is ONE group, and it exists even
+  when there are no solutions — `SELECT (COUNT(?e) AS ?c) WHERE {...}` over
+  an empty result answers one row with 0, which is what SPARQL says and what
+  a caller counting things expects. With `:by` vars an empty result is zero
+  groups and therefore zero rows."
+  [{:keys [by aggregates]} rows]
+  (let [groups (if (seq by)
+                 (->> rows
+                      (group-by #(select-keys % by))
+                      (map (fn [[k v]] [k v])))
+                 [[{} (vec rows)]])]
+    (for [[k v] groups]
+      (reduce (fn [row {:keys [var] :as agg}]
+                (let [x (aggregate-value agg v)]
+                  (cond-> row (some? x) (assoc var (literal x)))))
+              k
+              aggregates))))
+
 (defn- eval-node [node quads]
   (case (:sparql/op node)
     :bgp      (bgp (:patterns node) quads)
@@ -106,6 +179,7 @@
     :distinct (distinct (eval-node (:pattern node) quads))
     :order-by (sort (row-comparator (:vars node) (set (:desc node)))
                     (eval-node (:pattern node) quads))
+    :group    (group node (eval-node (:pattern node) quads))
     :slice    (cond->> (eval-node (:pattern node) quads)
                 (:offset node) (drop (:offset node))
                 (:limit node)  (take (:limit node)))))
