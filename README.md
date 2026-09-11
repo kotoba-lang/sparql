@@ -78,5 +78,5 @@ so a service can say which one it returns; this one says it.
 ## Test
 
 ```bash
-clojure -M:test
+kbb -M:test
 ```
